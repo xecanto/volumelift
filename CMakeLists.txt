@@ -16,6 +16,7 @@ if(MSVC)
 endif()
 
 add_library(VolumeLiftApo SHARED
+    src/apo/ApoLog.cpp
     src/apo/dllmain.cpp
     src/apo/SettingsWatcher.cpp
     src/apo/StatusSection.cpp

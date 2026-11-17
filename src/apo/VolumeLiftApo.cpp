@@ -1,5 +1,6 @@
 #include "apo/VolumeLiftApo.h"
 
+#include "apo/ApoLog.h"
 #include "common/Config.h"
 
 #include <cstring>
@@ -29,32 +30,55 @@ bool IsFloat32(const UNCOMPRESSEDAUDIOFORMAT& format) {
            format.dwSamplesPerFrame > 0;
 }
 
+void LogFormat(const wchar_t* label, IAudioMediaType* type) {
+    UNCOMPRESSEDAUDIOFORMAT f{};
+    if (!type) {
+        ApoLog(L"  %s: (null)", label);
+    } else if (FAILED(type->GetUncompressedAudioFormat(&f))) {
+        ApoLog(L"  %s: not uncompressed", label);
+    } else {
+        ApoLog(L"  %s: type %08lX ch=%lu container=%lu valid=%lu rate=%.0f mask=%lX", label, f.guidFormatType.Data1,
+               f.dwSamplesPerFrame, f.dwBytesPerSampleContainer, f.dwValidBitsPerSample, f.fFramesPerSecond,
+               f.dwChannelMask);
+    }
+}
+
 // The APO processes in place, so input and output must be the same 32-bit float layout.
-HRESULT CheckFormat(IAudioMediaType* opposite, IAudioMediaType* requested, IAudioMediaType** supported) {
+HRESULT CheckFormat(const wchar_t* side, IAudioMediaType* opposite, IAudioMediaType* requested,
+                    IAudioMediaType** supported) {
+    ApoLog(L"Is%sFormatSupported", side);
+    LogFormat(L"requested", requested);
+    LogFormat(L"opposite", opposite);
     if (!requested || !supported) {
         return E_POINTER;
     }
     *supported = nullptr;
 
+    HRESULT result = S_OK;
     UNCOMPRESSEDAUDIOFORMAT format{};
     if (FAILED(requested->GetUncompressedAudioFormat(&format)) || !IsFloat32(format)) {
-        return APOERR_FORMAT_NOT_SUPPORTED;
-    }
-    if (opposite) {
+        result = APOERR_FORMAT_NOT_SUPPORTED;
+    } else if (opposite) {
         UNCOMPRESSEDAUDIOFORMAT other{};
         if (SUCCEEDED(opposite->GetUncompressedAudioFormat(&other)) &&
             (other.dwSamplesPerFrame != format.dwSamplesPerFrame || other.fFramesPerSecond != format.fFramesPerSecond)) {
-            return APOERR_FORMAT_NOT_SUPPORTED;
+            result = APOERR_FORMAT_NOT_SUPPORTED;
         }
     }
-    requested->AddRef();
-    *supported = requested;
-    return S_OK;
+    if (SUCCEEDED(result)) {
+        requested->AddRef();
+        *supported = requested;
+    }
+    ApoLog(L"  -> 0x%08lX", static_cast<unsigned long>(result));
+    return result;
 }
 
 }  // namespace
 
-VolumeLiftApo::VolumeLiftApo() { ++g_serverRefs; }
+VolumeLiftApo::VolumeLiftApo() {
+    ++g_serverRefs;
+    ApoLog(L"APO %p created", this);
+}
 
 VolumeLiftApo::~VolumeLiftApo() {
     settings_.Stop();
@@ -62,6 +86,7 @@ VolumeLiftApo::~VolumeLiftApo() {
         InterlockedDecrement(&status_.Get()->lockedInstances);
     }
     --g_serverRefs;
+    ApoLog(L"APO %p destroyed", this);
 }
 
 STDMETHODIMP VolumeLiftApo::QueryInterface(REFIID riid, void** object) {
@@ -78,6 +103,9 @@ STDMETHODIMP VolumeLiftApo::QueryInterface(REFIID riid, void** object) {
         *object = static_cast<IAudioSystemEffects*>(this);
     } else {
         *object = nullptr;
+        wchar_t iid[64] = {};
+        StringFromGUID2(riid, iid, 64);
+        ApoLog(L"APO %p QueryInterface %s -> E_NOINTERFACE", this, iid);
         return E_NOINTERFACE;
     }
     AddRef();
@@ -138,19 +166,20 @@ STDMETHODIMP VolumeLiftApo::GetRegistrationProperties(APO_REG_PROPERTIES** prope
     return S_OK;
 }
 
-STDMETHODIMP VolumeLiftApo::Initialize(UINT32 /*cbDataSize*/, BYTE* /*pbyData*/) {
+STDMETHODIMP VolumeLiftApo::Initialize(UINT32 cbDataSize, BYTE* /*pbyData*/) {
     // System effects receive endpoint details here; the boost does not need them.
+    ApoLog(L"APO %p Initialize(%u bytes)", this, cbDataSize);
     return S_OK;
 }
 
 STDMETHODIMP VolumeLiftApo::IsInputFormatSupported(IAudioMediaType* opposite, IAudioMediaType* requested,
                                                    IAudioMediaType** supported) {
-    return CheckFormat(opposite, requested, supported);
+    return CheckFormat(L"Input", opposite, requested, supported);
 }
 
 STDMETHODIMP VolumeLiftApo::IsOutputFormatSupported(IAudioMediaType* opposite, IAudioMediaType* requested,
                                                     IAudioMediaType** supported) {
-    return CheckFormat(opposite, requested, supported);
+    return CheckFormat(L"Output", opposite, requested, supported);
 }
 
 STDMETHODIMP VolumeLiftApo::GetInputChannelCount(UINT32* count) {
@@ -171,7 +200,12 @@ STDMETHODIMP VolumeLiftApo::LockForProcess(UINT32 inputCount, APO_CONNECTION_DES
     if (status) {
         InterlockedIncrement(&status->lockAttempts);
     }
-    const auto fail = [status](HRESULT hr) {
+    ApoLog(L"APO %p LockForProcess(in=%u, out=%u) status=%p", this, inputCount, outputCount, status);
+    if (inputCount > 0 && inputs && inputs[0]) {
+        LogFormat(L"lock input", inputs[0]->pFormat);
+    }
+    const auto fail = [this, status](HRESULT hr) {
+        ApoLog(L"APO %p LockForProcess failed 0x%08lX", this, static_cast<unsigned long>(hr));
         if (status) {
             status->lastLockResult = hr;
             InterlockedIncrement(&status->lockFailures);
@@ -203,6 +237,8 @@ STDMETHODIMP VolumeLiftApo::LockForProcess(UINT32 inputCount, APO_CONNECTION_DES
         status->lastLockResult = S_OK;
         InterlockedIncrement(&status->lockedInstances);
     }
+    ApoLog(L"APO %p locked: %u ch @ %.0f Hz, gain %.1f dB", this, channels_, format.fFramesPerSecond,
+           settings_.GainDb());
     return S_OK;
 }
 
@@ -215,6 +251,7 @@ STDMETHODIMP VolumeLiftApo::UnlockForProcess() {
     if (status_.Get()) {
         InterlockedDecrement(&status_.Get()->lockedInstances);
     }
+    ApoLog(L"APO %p unlocked", this);
     return S_OK;
 }
 

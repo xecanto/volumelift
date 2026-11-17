@@ -1,5 +1,6 @@
 #include "apo/SettingsWatcher.h"
 
+#include "apo/ApoLog.h"
 #include "common/Config.h"
 
 #include <algorithm>
@@ -59,8 +60,13 @@ void SettingsWatcher::Run() {
         return;
     }
     HKEY key = nullptr;
+    LSTATUS lastLogged = -1;
     for (;;) {
         const LSTATUS opened = key ? ERROR_SUCCESS : RegOpenKeyExW(HKEY_LOCAL_MACHINE, kSettingsKey, 0, KEY_READ, &key);
+        if (opened != lastLogged) {
+            ApoLog(L"Settings key open: %ld", opened);
+            lastLogged = opened;
+        }
         if (status_) {
             status_->settingsError = opened;
             status_->settingsState = opened == ERROR_SUCCESS ? kSettingsOk : kSettingsOpenFailed;

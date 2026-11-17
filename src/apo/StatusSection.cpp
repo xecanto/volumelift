@@ -1,5 +1,7 @@
 #include "apo/StatusSection.h"
 
+#include "apo/ApoLog.h"
+
 #include <sddl.h>
 
 namespace vl {
@@ -26,13 +28,18 @@ void StatusSection::Open() {
     SECURITY_ATTRIBUTES attributes{sizeof(attributes), descriptor, FALSE};
     mapping_ = CreateFileMappingW(INVALID_HANDLE_VALUE, &attributes, PAGE_READWRITE, 0, sizeof(EngineStatus),
                                   kStatusSectionName);
-    const bool existed = GetLastError() == ERROR_ALREADY_EXISTS;
+    const DWORD error = GetLastError();
+    const bool existed = error == ERROR_ALREADY_EXISTS;
     LocalFree(descriptor);
     if (!mapping_) {
+        ApoLog(L"Status section create failed (%lu)", error);
         return;
     }
     view_ = static_cast<EngineStatus*>(MapViewOfFile(mapping_, FILE_MAP_WRITE | FILE_MAP_READ, 0, 0,
                                                      sizeof(EngineStatus)));
+    if (!view_) {
+        ApoLog(L"Status section map failed (%lu)", GetLastError());
+    }
     if (view_ && !existed) {
         view_->version = kStatusVersion;
         view_->limiterPermille = 1000;
