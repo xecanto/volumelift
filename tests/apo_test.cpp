@@ -78,6 +78,18 @@ private:
     WAVEFORMATEX wave_{};
 };
 
+// Stand-in controlling unknown for the aggregation test; counts references routed to it.
+class Outer final : public IUnknown {
+public:
+    STDMETHODIMP QueryInterface(REFIID riid, void** object) override {
+        return inner ? inner->QueryInterface(riid, object) : E_NOINTERFACE;
+    }
+    STDMETHODIMP_(ULONG) AddRef() override { return ++refs; }
+    STDMETHODIMP_(ULONG) Release() override { return --refs; }
+    IUnknown* inner = nullptr;
+    ULONG refs = 1;
+};
+
 using GetClassObjectFn = HRESULT(STDAPICALLTYPE*)(REFCLSID, REFIID, void**);
 
 }  // namespace
@@ -102,6 +114,29 @@ int main(int argc, char** argv) {
     Check(factory && SUCCEEDED(factory->CreateInstance(nullptr, IID_PPV_ARGS(&apo))), "APO instance created");
     if (!apo) {
         return 1;
+    }
+
+    {
+        Outer outer;
+        IUnknown* inner = nullptr;
+        IAudioProcessingObject* wrong = nullptr;
+        Check(factory->CreateInstance(&outer, IID_PPV_ARGS(&wrong)) == CLASS_E_NOAGGREGATION,
+              "aggregation refuses a non-IUnknown request");
+        Check(SUCCEEDED(factory->CreateInstance(&outer, IID_PPV_ARGS(&inner))) && inner, "aggregated instance created");
+        if (inner) {
+            outer.inner = inner;
+            IAudioProcessingObject* viaInner = nullptr;
+            const ULONG before = outer.refs;
+            Check(SUCCEEDED(inner->QueryInterface(IID_PPV_ARGS(&viaInner))) && outer.refs == before + 1,
+                  "aggregated interfaces count references on the outer object");
+            IAudioProcessingObjectRT* viaOuter = nullptr;
+            Check(SUCCEEDED(viaInner->QueryInterface(IID_PPV_ARGS(&viaOuter))), "aggregated QI delegates to outer");
+            if (viaOuter) {
+                viaOuter->Release();
+            }
+            viaInner->Release();
+            inner->Release();  // destroys the aggregated object
+        }
     }
 
     IAudioSystemEffects* effects = nullptr;

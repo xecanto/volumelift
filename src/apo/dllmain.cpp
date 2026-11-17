@@ -29,22 +29,26 @@ public:
     STDMETHODIMP_(ULONG) Release() override { return 1; }
 
     STDMETHODIMP CreateInstance(IUnknown* outer, REFIID riid, void** object) override {
+        wchar_t iid[64] = {};
+        StringFromGUID2(riid, iid, 64);
+        vl::ApoLog(L"CreateInstance %s outer=%p", iid, outer);
         if (!object) {
             return E_POINTER;
         }
         *object = nullptr;
-        if (outer) {
+        // COM aggregation rule: an aggregated object is only handed out as its inner IUnknown.
+        if (outer && riid != __uuidof(IUnknown)) {
+            vl::ApoLog(L"  -> CLASS_E_NOAGGREGATION");
             return CLASS_E_NOAGGREGATION;
         }
-        auto* apo = new (std::nothrow) vl::VolumeLiftApo();
+        auto* apo = new (std::nothrow) vl::VolumeLiftApo(outer);
         if (!apo) {
             return E_OUTOFMEMORY;
         }
-        const HRESULT hr = apo->QueryInterface(riid, object);
-        apo->Release();
-        wchar_t iid[64] = {};
-        StringFromGUID2(riid, iid, 64);
-        vl::ApoLog(L"CreateInstance %s -> 0x%08lX", iid, static_cast<unsigned long>(hr));
+        IUnknown* inner = apo->Inner();
+        const HRESULT hr = inner->QueryInterface(riid, object);
+        inner->Release();
+        vl::ApoLog(L"  -> 0x%08lX", static_cast<unsigned long>(hr));
         return hr;
     }
 
@@ -90,12 +94,16 @@ STDAPI DllGetClassObject(REFCLSID clsid, REFIID riid, void** object) {
     }
     *object = nullptr;
     wchar_t requested[64] = {};
+    wchar_t iid[64] = {};
     StringFromGUID2(clsid, requested, 64);
-    vl::ApoLog(L"DllGetClassObject %s", requested);
+    StringFromGUID2(riid, iid, 64);
     if (clsid != vl::kApoClsid) {
+        vl::ApoLog(L"DllGetClassObject %s %s -> CLASS_E_CLASSNOTAVAILABLE", requested, iid);
         return CLASS_E_CLASSNOTAVAILABLE;
     }
-    return g_factory.QueryInterface(riid, object);
+    const HRESULT hr = g_factory.QueryInterface(riid, object);
+    vl::ApoLog(L"DllGetClassObject %s %s -> 0x%08lX", requested, iid, static_cast<unsigned long>(hr));
+    return hr;
 }
 
 STDAPI DllCanUnloadNow() { return vl::g_serverRefs.load() == 0 ? S_OK : S_FALSE; }

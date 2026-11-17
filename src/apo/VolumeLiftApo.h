@@ -20,10 +20,14 @@ class VolumeLiftApo final : public IAudioProcessingObject,
                             public IAudioProcessingObjectConfiguration,
                             public IAudioSystemEffects {
 public:
-    VolumeLiftApo();
+    // `outer` is the controlling unknown when the audio engine aggregates the APO, else null.
+    explicit VolumeLiftApo(IUnknown* outer);
     ~VolumeLiftApo();
 
-    // IUnknown
+    // The non-delegating IUnknown, owning the object's lifetime. Holds one reference on creation.
+    IUnknown* Inner() { return &inner_; }
+
+    // IUnknown, delegating to the controlling unknown.
     STDMETHODIMP QueryInterface(REFIID riid, void** object) override;
     STDMETHODIMP_(ULONG) AddRef() override;
     STDMETHODIMP_(ULONG) Release() override;
@@ -54,7 +58,20 @@ public:
     static void FillRegistration(APO_REG_PROPERTIES& props);
 
 private:
-    std::atomic<ULONG> refs_{1};
+    class InnerUnknown final : public IUnknown {
+    public:
+        explicit InnerUnknown(VolumeLiftApo* owner) : owner_(owner) {}
+        STDMETHODIMP QueryInterface(REFIID riid, void** object) override;
+        STDMETHODIMP_(ULONG) AddRef() override;
+        STDMETHODIMP_(ULONG) Release() override;
+
+    private:
+        VolumeLiftApo* owner_;
+        std::atomic<ULONG> refs_{1};
+    };
+
+    InnerUnknown inner_{this};
+    IUnknown* outer_;
     bool locked_ = false;
     UINT32 channels_ = 0;
     Booster booster_;

@@ -75,9 +75,9 @@ HRESULT CheckFormat(const wchar_t* side, IAudioMediaType* opposite, IAudioMediaT
 
 }  // namespace
 
-VolumeLiftApo::VolumeLiftApo() {
+VolumeLiftApo::VolumeLiftApo(IUnknown* outer) : outer_(outer ? outer : &inner_) {
     ++g_serverRefs;
-    ApoLog(L"APO %p created", this);
+    ApoLog(L"APO %p created%s", this, outer ? L" (aggregated)" : L"");
 }
 
 VolumeLiftApo::~VolumeLiftApo() {
@@ -89,38 +89,49 @@ VolumeLiftApo::~VolumeLiftApo() {
     ApoLog(L"APO %p destroyed", this);
 }
 
-STDMETHODIMP VolumeLiftApo::QueryInterface(REFIID riid, void** object) {
+STDMETHODIMP VolumeLiftApo::InnerUnknown::QueryInterface(REFIID riid, void** object) {
     if (!object) {
         return E_POINTER;
     }
-    if (riid == __uuidof(IUnknown) || riid == __uuidof(IAudioProcessingObject)) {
-        *object = static_cast<IAudioProcessingObject*>(this);
+    IUnknown* found = nullptr;
+    if (riid == __uuidof(IUnknown)) {
+        found = this;
+    } else if (riid == __uuidof(IAudioProcessingObject)) {
+        found = static_cast<IAudioProcessingObject*>(owner_);
     } else if (riid == __uuidof(IAudioProcessingObjectRT)) {
-        *object = static_cast<IAudioProcessingObjectRT*>(this);
+        found = static_cast<IAudioProcessingObjectRT*>(owner_);
     } else if (riid == __uuidof(IAudioProcessingObjectConfiguration)) {
-        *object = static_cast<IAudioProcessingObjectConfiguration*>(this);
+        found = static_cast<IAudioProcessingObjectConfiguration*>(owner_);
     } else if (riid == __uuidof(IAudioSystemEffects)) {
-        *object = static_cast<IAudioSystemEffects*>(this);
-    } else {
+        found = static_cast<IAudioSystemEffects*>(owner_);
+    }
+    if (!found) {
         *object = nullptr;
         wchar_t iid[64] = {};
         StringFromGUID2(riid, iid, 64);
-        ApoLog(L"APO %p QueryInterface %s -> E_NOINTERFACE", this, iid);
+        ApoLog(L"APO %p QueryInterface %s -> E_NOINTERFACE", owner_, iid);
         return E_NOINTERFACE;
     }
-    AddRef();
+    found->AddRef();  // delegates to the controlling unknown, except for the inner IUnknown itself
+    *object = found;
     return S_OK;
 }
 
-STDMETHODIMP_(ULONG) VolumeLiftApo::AddRef() { return ++refs_; }
+STDMETHODIMP_(ULONG) VolumeLiftApo::InnerUnknown::AddRef() { return ++refs_; }
 
-STDMETHODIMP_(ULONG) VolumeLiftApo::Release() {
+STDMETHODIMP_(ULONG) VolumeLiftApo::InnerUnknown::Release() {
     const ULONG refs = --refs_;
     if (refs == 0) {
-        delete this;
+        delete owner_;
     }
     return refs;
 }
+
+STDMETHODIMP VolumeLiftApo::QueryInterface(REFIID riid, void** object) { return outer_->QueryInterface(riid, object); }
+
+STDMETHODIMP_(ULONG) VolumeLiftApo::AddRef() { return outer_->AddRef(); }
+
+STDMETHODIMP_(ULONG) VolumeLiftApo::Release() { return outer_->Release(); }
 
 STDMETHODIMP VolumeLiftApo::Reset() {
     booster_.Reset();
