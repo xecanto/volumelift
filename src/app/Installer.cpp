@@ -7,6 +7,7 @@
 #include <mmdeviceapi.h>
 #include <sddl.h>
 #include <shlobj.h>
+#include <shobjidl.h>
 
 #include <cstring>
 #include <vector>
@@ -25,6 +26,7 @@ constexpr wchar_t kRenderRoot[] = L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion
 constexpr wchar_t kAudioPolicyKey[] = L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Audio";
 constexpr wchar_t kDisableProtectedAudioDG[] = L"DisableProtectedAudioDG";
 constexpr wchar_t kBackupKey[] = L"SOFTWARE\\VolumeLift\\Backup";
+constexpr wchar_t kUninstallKey[] = L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\VolumeLift";
 constexpr wchar_t kAbsentList[] = L"__absent";
 constexpr wchar_t kSddlValue[] = L"__sddl";
 
@@ -461,6 +463,62 @@ void CreateSettingsKey(Log& log) {
     }
 }
 
+std::wstring StartMenuShortcutPath() {
+    wchar_t* programs = nullptr;
+    if (FAILED(SHGetKnownFolderPath(FOLDERID_CommonPrograms, 0, nullptr, &programs))) {
+        return {};
+    }
+    std::wstring path = std::wstring(programs) + L"\\VolumeLift.lnk";
+    CoTaskMemFree(programs);
+    return path;
+}
+
+// All-users Start menu shortcut, which is what Windows Search indexes for apps.
+void CreateStartMenuShortcut(const std::wstring& exe, const std::wstring& dir, Log& log) {
+    const std::wstring path = StartMenuShortcutPath();
+    IShellLinkW* link = nullptr;
+    HRESULT hr = CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&link));
+    if (SUCCEEDED(hr)) {
+        link->SetPath(exe.c_str());
+        link->SetWorkingDirectory(dir.c_str());
+        link->SetDescription(L"System-wide volume booster");
+        link->SetIconLocation(exe.c_str(), 0);
+        IPersistFile* file = nullptr;
+        hr = link->QueryInterface(IID_PPV_ARGS(&file));
+        if (SUCCEEDED(hr)) {
+            hr = file->Save(path.c_str(), TRUE);
+            file->Release();
+        }
+        link->Release();
+    }
+    if (FAILED(hr) || path.empty()) {
+        log.Error(L"Create Start menu shortcut", hr);
+    } else {
+        log.Line(L"Added Start menu shortcut");
+    }
+}
+
+// Entry in Settings > Apps > Installed apps.
+void RegisterInstalledApp(const std::wstring& exe, const std::wstring& dir, Log& log) {
+    HKEY key = nullptr;
+    if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, kUninstallKey, 0, nullptr, 0, KEY_SET_VALUE, nullptr, &key, nullptr) !=
+        ERROR_SUCCESS) {
+        log.Error(L"Register in Installed apps", GetLastError());
+        return;
+    }
+    WriteValue(key, L"DisplayName", StringValue(L"VolumeLift"));
+    WriteValue(key, L"DisplayVersion", StringValue(kVersion));
+    WriteValue(key, L"Publisher", StringValue(L"VolumeLift contributors"));
+    WriteValue(key, L"DisplayIcon", StringValue(exe));
+    WriteValue(key, L"InstallLocation", StringValue(dir));
+    WriteValue(key, L"UninstallString", StringValue(L"\"" + exe + L"\" --uninstall"));
+    WriteValue(key, L"URLInfoAbout", StringValue(kProjectUrl));
+    WriteValue(key, L"NoModify", DwordValue(1));
+    WriteValue(key, L"NoRepair", DwordValue(1));
+    RegCloseKey(key);
+    log.Line(L"Registered in Installed apps");
+}
+
 // Lets the audio engine (LocalService) write its diagnostic log next to install.log.
 void PrepareLogFolder(Log& log) {
     wchar_t dir[MAX_PATH];
@@ -591,6 +649,8 @@ InstallResult Install(const std::wstring& sourceDirectory) {
     }
     CreateSettingsKey(log);
     PrepareLogFolder(log);
+    CreateStartMenuShortcut(dir + L"\\VolumeLift.exe", dir, log);
+    RegisterInstalledApp(dir + L"\\VolumeLift.exe", dir, log);
 
     // Unsigned third-party APOs need the audio engine's protected mode off.
     BackUpKey(kAudioPolicyKey, std::wstring(kBackupKey) + L"\\AudioPolicy", {kDisableProtectedAudioDG});
@@ -694,6 +754,11 @@ InstallResult Uninstall() {
         CallDllExport(dll, "DllUnregisterServer", log);
     }
     RegDeleteTreeW(HKEY_LOCAL_MACHINE, kSettingsKey);
+    RegDeleteTreeW(HKEY_LOCAL_MACHINE, kUninstallKey);
+    const std::wstring shortcut = StartMenuShortcutPath();
+    if (!shortcut.empty()) {
+        DeleteFileW(shortcut.c_str());
+    }
 
     ControlAudioService(true, log);
 

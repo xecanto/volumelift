@@ -31,7 +31,7 @@ add_executable(VolumeLift WIN32
     src/app/VolumeLift.rc
     src/app/VolumeLift.manifest)
 target_include_directories(VolumeLift PRIVATE src)
-target_link_libraries(VolumeLift PRIVATE comctl32 shell32 ole32 advapi32 user32 gdi32)
+target_link_libraries(VolumeLift PRIVATE comctl32 shell32 ole32 uuid advapi32 user32 gdi32)
 
 enable_testing()
 add_executable(booster_test tests/booster_test.cpp)

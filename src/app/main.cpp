@@ -145,8 +145,8 @@ void UpdateEngineStatus() {
     }
     const vl::EngineStatus* s = g_app.engineStatus;
     if (!s || s->magic != vl::kStatusMagic) {
-        SetWindowTextW(g_app.engine, L"Engine: VolumeLift hasn't been loaded by Windows Audio yet.\n"
-                                     L"Play some audio. If this stays, reinstall the driver.");
+        SetWindowTextW(g_app.engine, L"Engine: idle. Play some audio to see VolumeLift working.\n"
+                                     L"If it stays idle while audio plays, reinstall the driver.");
         return;
     }
 
