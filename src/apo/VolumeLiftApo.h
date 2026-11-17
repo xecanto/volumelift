@@ -10,6 +10,7 @@
 #include <atomic>
 
 #include "apo/SettingsWatcher.h"
+#include "apo/StatusSection.h"
 #include "dsp/Booster.h"
 
 namespace vl {
@@ -58,6 +59,7 @@ private:
     UINT32 channels_ = 0;
     Booster booster_;
     SettingsWatcher settings_;
+    StatusSection status_;
 };
 
 // Number of live objects and server locks, for DllCanUnloadNow.

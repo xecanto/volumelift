@@ -7,6 +7,8 @@
 #include <atomic>
 #include <thread>
 
+#include "common/EngineStatus.h"
+
 namespace vl {
 
 class SettingsWatcher {
@@ -16,7 +18,8 @@ public:
     SettingsWatcher(const SettingsWatcher&) = delete;
     SettingsWatcher& operator=(const SettingsWatcher&) = delete;
 
-    void Start();
+    // `status` (may be null) receives whether the settings key could be read.
+    void Start(EngineStatus* status);
     void Stop();
 
     float GainDb() const { return gainTenthsDb_.load(std::memory_order_relaxed) / 10.0f; }
@@ -31,6 +34,7 @@ private:
     std::atomic<bool> limiter_{true};
     std::atomic<bool> enabled_{true};
     HANDLE stop_ = nullptr;
+    EngineStatus* status_ = nullptr;
     std::thread thread_;
 };
 

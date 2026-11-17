@@ -23,10 +23,11 @@ SettingsWatcher::SettingsWatcher() : gainTenthsDb_(static_cast<int>(kDefaultGain
 
 SettingsWatcher::~SettingsWatcher() { Stop(); }
 
-void SettingsWatcher::Start() {
+void SettingsWatcher::Start(EngineStatus* status) {
     if (thread_.joinable()) {
         return;
     }
+    status_ = status;
     stop_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     if (!stop_) {
         return;
@@ -59,7 +60,12 @@ void SettingsWatcher::Run() {
     }
     HKEY key = nullptr;
     for (;;) {
-        if (!key && RegOpenKeyExW(HKEY_LOCAL_MACHINE, kSettingsKey, 0, KEY_READ | KEY_NOTIFY, &key) != ERROR_SUCCESS) {
+        const LSTATUS opened = key ? ERROR_SUCCESS : RegOpenKeyExW(HKEY_LOCAL_MACHINE, kSettingsKey, 0, KEY_READ, &key);
+        if (status_) {
+            status_->settingsError = opened;
+            status_->settingsState = opened == ERROR_SUCCESS ? kSettingsOk : kSettingsOpenFailed;
+        }
+        if (opened != ERROR_SUCCESS) {
             key = nullptr;
             // The key may not exist yet; check again shortly.
             if (WaitForSingleObject(stop_, 2000) == WAIT_OBJECT_0) {

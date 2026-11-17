@@ -1,4 +1,4 @@
-# VolumeLift
+# <img src="assets/icon-256.png" width="40" align="top"> VolumeLift
 
 Free, open-source system-wide volume booster for Windows 10/11 (x64).
 
@@ -16,6 +16,10 @@ without per-app hooks or virtual audio devices.
 2. Run `VolumeLift.exe` and click **Install driver** (asks for administrator rights).
    Windows Audio restarts for a second.
 3. Move the slider. Close the window to keep VolumeLift in the tray.
+
+The window's **Engine** line shows what the audio engine is doing live: whether VolumeLift is
+processing a stream, the gain it's applying, the output peak and how much the limiter is
+reducing. If the slider seems to do nothing, check that line first.
 
 To remove it, click **Uninstall driver**. That restores every registry value and permission
 the installer changed, then deletes the installed files.
@@ -76,6 +80,7 @@ push, and tags named `v*` publish a release.
 | `src/apo/` | APO COM object, class factory, registration, settings watcher |
 | `src/app/` | Tray UI and the installer |
 | `tests/` | Offline DSP tests |
+| `tools/make-icon.mjs` | Regenerates `assets/VolumeLift.ico` (`node tools/make-icon.mjs`) |
 
 ## Provenance
 

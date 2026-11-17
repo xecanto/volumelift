@@ -58,6 +58,9 @@ VolumeLiftApo::VolumeLiftApo() { ++g_serverRefs; }
 
 VolumeLiftApo::~VolumeLiftApo() {
     settings_.Stop();
+    if (locked_ && status_.Get()) {
+        InterlockedDecrement(&status_.Get()->lockedInstances);
+    }
     --g_serverRefs;
 }
 
@@ -163,22 +166,43 @@ STDMETHODIMP VolumeLiftApo::LockForProcess(UINT32 inputCount, APO_CONNECTION_DES
     if (locked_) {
         return APOERR_ALREADY_LOCKED;
     }
+    status_.Open();
+    EngineStatus* status = status_.Get();
+    if (status) {
+        InterlockedIncrement(&status->lockAttempts);
+    }
+    const auto fail = [status](HRESULT hr) {
+        if (status) {
+            status->lastLockResult = hr;
+            InterlockedIncrement(&status->lockFailures);
+        }
+        return hr;
+    };
+
     if (inputCount != 1 || outputCount != 1 || !inputs || !outputs || !inputs[0] || !inputs[0]->pFormat) {
-        return E_INVALIDARG;
+        return fail(E_INVALIDARG);
     }
     UNCOMPRESSEDAUDIOFORMAT format{};
     HRESULT hr = inputs[0]->pFormat->GetUncompressedAudioFormat(&format);
     if (FAILED(hr)) {
-        return hr;
+        return fail(hr);
+    }
+    if (status) {
+        status->channels = static_cast<LONG>(format.dwSamplesPerFrame);
+        status->sampleRate = static_cast<LONG>(format.fFramesPerSecond);
     }
     if (!IsFloat32(format)) {
-        return APOERR_FORMAT_NOT_SUPPORTED;
+        return fail(APOERR_FORMAT_NOT_SUPPORTED);
     }
     channels_ = format.dwSamplesPerFrame;
     booster_.Prepare(format.fFramesPerSecond, channels_);
     booster_.SetTarget(settings_.GainDb(), settings_.Limiter());
-    settings_.Start();
+    settings_.Start(status);
     locked_ = true;
+    if (status) {
+        status->lastLockResult = S_OK;
+        InterlockedIncrement(&status->lockedInstances);
+    }
     return S_OK;
 }
 
@@ -188,6 +212,9 @@ STDMETHODIMP VolumeLiftApo::UnlockForProcess() {
     }
     settings_.Stop();
     locked_ = false;
+    if (status_.Get()) {
+        InterlockedDecrement(&status_.Get()->lockedInstances);
+    }
     return S_OK;
 }
 
@@ -211,15 +238,27 @@ STDMETHODIMP_(void) VolumeLiftApo::APOProcess(UINT32 inputCount, APO_CONNECTION_
     if (dest != source) {
         std::memcpy(dest, source, static_cast<size_t>(frames) * channels_ * sizeof(float));
     }
-    if (settings_.Enabled()) {
-        booster_.SetTarget(settings_.GainDb(), settings_.Limiter());
-    } else {
-        booster_.SetTarget(0.0f, false);
-    }
+    const bool enabled = settings_.Enabled();
+    const float gainDb = enabled ? settings_.GainDb() : 0.0f;
+    booster_.SetTarget(gainDb, enabled && settings_.Limiter());
     booster_.Process(dest, frames);
 
     out->u32ValidFrameCount = frames;
     out->u32BufferFlags = BUFFER_VALID;
+
+    if (EngineStatus* status = status_.Get()) {
+        float peak = 0.0f;
+        const size_t samples = static_cast<size_t>(frames) * channels_;
+        for (size_t i = 0; i < samples; ++i) {
+            peak = std::max(peak, std::fabs(dest[i]));
+        }
+        status->peakPermille = static_cast<LONG>(peak * 1000.0f);
+        status->limiterPermille = static_cast<LONG>(booster_.LimiterGain() * 1000.0f);
+        status->appliedGainTenths = static_cast<LONG>(gainDb * 10.0f + 0.5f);
+        status->enabled = enabled ? 1 : 0;
+        status->lastProcessTick = static_cast<LONG>(GetTickCount());
+        InterlockedAdd64(&status->framesProcessed, frames);
+    }
 }
 
 STDMETHODIMP_(UINT32) VolumeLiftApo::CalcInputFrames(UINT32 outputFrameCount) { return outputFrameCount; }

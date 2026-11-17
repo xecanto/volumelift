@@ -2,6 +2,8 @@
 // plus the --install / --uninstall entry points used for elevation.
 #include "app/Installer.h"
 #include "common/Config.h"
+#include "common/EngineStatus.h"
+#include "app/resource.h"
 
 #include <windows.h>
 #include <commctrl.h>
@@ -9,6 +11,7 @@
 #include <shellapi.h>
 #include <windowsx.h>
 
+#include <algorithm>
 #include <cmath>
 #include <string>
 
@@ -19,6 +22,9 @@ constexpr UINT kTrayId = 1;
 constexpr wchar_t kWindowClass[] = L"VolumeLiftWindow";
 constexpr wchar_t kRunKey[] = L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run";
 constexpr int kSliderStepTenths = 5;  // slider moves in 0.5 dB steps
+constexpr UINT_PTR kStatusTimer = 1;
+constexpr UINT kStatusIntervalMs = 500;
+constexpr WORD kAppIconId = IDI_VOLUMELIFT;
 
 enum ControlId : int {
     kSlider = 100,
@@ -27,6 +33,7 @@ enum ControlId : int {
     kEnabledBox,
     kStartupBox,
     kStatusLabel,
+    kEngineLabel,
     kDriverButton,
     kMenuOpen,
     kMenuEnabled,
@@ -41,10 +48,15 @@ struct App {
     HWND enabled = nullptr;
     HWND startup = nullptr;
     HWND status = nullptr;
+    HWND engine = nullptr;
     HWND driverButton = nullptr;
     HFONT font = nullptr;
+    HICON iconLarge = nullptr;
+    HICON iconSmall = nullptr;
     NOTIFYICONDATAW tray{};
     bool settingsWritable = false;
+    HANDLE statusMapping = nullptr;
+    const vl::EngineStatus* engineStatus = nullptr;
 } g_app;
 
 std::wstring ExePath() {
@@ -120,6 +132,50 @@ void UpdateTrayTip() {
     wcscpy_s(g_app.tray.szTip, tip);
     g_app.tray.uFlags = NIF_TIP;
     Shell_NotifyIconW(NIM_MODIFY, &g_app.tray);
+}
+
+// Shows what the APO inside the audio engine is actually doing.
+void UpdateEngineStatus() {
+    if (!g_app.engineStatus) {
+        g_app.statusMapping = OpenFileMappingW(FILE_MAP_READ, FALSE, vl::kStatusSectionName);
+        if (g_app.statusMapping) {
+            g_app.engineStatus = static_cast<const vl::EngineStatus*>(
+                MapViewOfFile(g_app.statusMapping, FILE_MAP_READ, 0, 0, sizeof(vl::EngineStatus)));
+        }
+    }
+    const vl::EngineStatus* s = g_app.engineStatus;
+    if (!s || s->magic != vl::kStatusMagic) {
+        SetWindowTextW(g_app.engine, L"Engine: VolumeLift hasn't been loaded by Windows Audio yet.\n"
+                                     L"Play some audio. If this stays, reinstall the driver.");
+        return;
+    }
+
+    std::wstring text;
+    const DWORD age = GetTickCount() - static_cast<DWORD>(s->lastProcessTick);
+    wchar_t line[160];
+    if (s->framesProcessed > 0 && age < 1500) {
+        const double limiterDb = 20.0 * std::log10(std::max(1, static_cast<int>(s->limiterPermille)) / 1000.0);
+        swprintf_s(line, L"Engine: processing %ld ch @ %ld Hz, applying +%.1f dB%s", s->channels, s->sampleRate,
+                   s->appliedGainTenths / 10.0, s->enabled ? L"" : L" (disabled)");
+        text += line;
+        swprintf_s(line, L"\nOutput peak %3.0f%%   limiter %s%.1f dB", s->peakPermille / 10.0,
+                   limiterDb < -0.05 ? L"" : L"idle ", limiterDb);
+        text += line;
+    } else if (s->lockedInstances > 0) {
+        text = L"Engine: loaded and ready (no audio playing right now)";
+    } else {
+        text = L"Engine: loaded, waiting for an audio stream";
+    }
+    if (s->lockFailures > 0) {
+        swprintf_s(line, L"\nStream rejected %ld time(s), last result 0x%08lX", s->lockFailures,
+                   static_cast<unsigned long>(s->lastLockResult));
+        text += line;
+    }
+    if (s->settingsState == vl::kSettingsOpenFailed) {
+        swprintf_s(line, L"\nCan't read settings (error %ld); using defaults", s->settingsError);
+        text += line;
+    }
+    SetWindowTextW(g_app.engine, text.c_str());
 }
 
 void RefreshState() {
@@ -227,8 +283,9 @@ void CreateControls() {
     g_app.enabled = AddControl(L"BUTTON", L"Boost enabled", BS_AUTOCHECKBOX | WS_TABSTOP, 16, 124, 300, 22, kEnabledBox);
     g_app.startup = AddControl(L"BUTTON", L"Start with Windows", BS_AUTOCHECKBOX | WS_TABSTOP, 16, 148, 300, 22,
                                kStartupBox);
-    g_app.status = AddControl(L"STATIC", L"", 0, 16, 182, 310, 20, kStatusLabel);
-    g_app.driverButton = AddControl(L"BUTTON", L"", BS_PUSHBUTTON | WS_TABSTOP, 16, 208, 140, 28, kDriverButton);
+    g_app.engine = AddControl(L"STATIC", L"", SS_LEFT, 16, 180, 330, 64, kEngineLabel);
+    g_app.status = AddControl(L"STATIC", L"", 0, 16, 250, 330, 20, kStatusLabel);
+    g_app.driverButton = AddControl(L"BUTTON", L"", BS_PUSHBUTTON | WS_TABSTOP, 16, 276, 140, 28, kDriverButton);
 }
 
 LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -241,10 +298,18 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         g_app.tray.uID = kTrayId;
         g_app.tray.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
         g_app.tray.uCallbackMessage = kTrayMessage;
-        g_app.tray.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+        g_app.tray.hIcon = g_app.iconSmall;
         wcscpy_s(g_app.tray.szTip, L"VolumeLift");
         Shell_NotifyIconW(NIM_ADD, &g_app.tray);
         RefreshState();
+        UpdateEngineStatus();
+        SetTimer(window, kStatusTimer, kStatusIntervalMs, nullptr);
+        return 0;
+
+    case WM_TIMER:
+        if (wParam == kStatusTimer && IsWindowVisible(window)) {
+            UpdateEngineStatus();
+        }
         return 0;
 
     case WM_HSCROLL:
@@ -301,7 +366,14 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         return 0;
 
     case WM_DESTROY:
+        KillTimer(window, kStatusTimer);
         Shell_NotifyIconW(NIM_DELETE, &g_app.tray);
+        if (g_app.engineStatus) {
+            UnmapViewOfFile(g_app.engineStatus);
+        }
+        if (g_app.statusMapping) {
+            CloseHandle(g_app.statusMapping);
+        }
         DeleteObject(g_app.font);
         PostQuitMessage(0);
         return 0;
@@ -344,16 +416,22 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int show) 
     INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_BAR_CLASSES | ICC_STANDARD_CLASSES};
     InitCommonControlsEx(&controls);
 
+    g_app.iconLarge = static_cast<HICON>(LoadImageW(instance, MAKEINTRESOURCEW(kAppIconId), IMAGE_ICON,
+                                                    GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), 0));
+    g_app.iconSmall = static_cast<HICON>(LoadImageW(instance, MAKEINTRESOURCEW(kAppIconId), IMAGE_ICON,
+                                                    GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0));
+
     WNDCLASSEXW wc{sizeof(wc)};
     wc.lpfnWndProc = WindowProc;
     wc.hInstance = instance;
-    wc.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    wc.hIcon = g_app.iconLarge;
+    wc.hIconSm = g_app.iconSmall;
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
     wc.lpszClassName = kWindowClass;
     RegisterClassExW(&wc);
 
-    RECT rect{0, 0, Scale(344), Scale(252)};
+    RECT rect{0, 0, Scale(362), Scale(320)};
     const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
     AdjustWindowRect(&rect, style, FALSE);
     HWND window = CreateWindowExW(0, kWindowClass, L"VolumeLift", style, CW_USEDEFAULT, CW_USEDEFAULT,

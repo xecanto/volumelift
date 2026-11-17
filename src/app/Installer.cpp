@@ -453,6 +453,12 @@ void CreateSettingsKey(Log& log) {
     if (status != ERROR_SUCCESS) {
         log.Error(L"Grant users access to settings", status);
     }
+    // The audio engine (audiodg.exe) runs as LocalService; make its read access explicit.
+    auto localService = WellKnownSid(WinLocalServiceSid);
+    const DWORD readStatus = GrantAccess(kSettingsKey, localService, KEY_READ, NO_INHERITANCE);
+    if (readStatus != ERROR_SUCCESS) {
+        log.Error(L"Grant the audio engine access to settings", readStatus);
+    }
 }
 
 void WriteLogFile(const std::wstring& text) {

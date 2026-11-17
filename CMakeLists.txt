@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(VolumeLift VERSION 0.1.0 LANGUAGES CXX)
+project(VolumeLift VERSION 0.1.1 LANGUAGES CXX RC)
 
 if(NOT WIN32 OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "VolumeLift builds for 64-bit Windows only.")
@@ -18,6 +18,7 @@ endif()
 add_library(VolumeLiftApo SHARED
     src/apo/dllmain.cpp
     src/apo/SettingsWatcher.cpp
+    src/apo/StatusSection.cpp
     src/apo/VolumeLiftApo.cpp
     src/apo/VolumeLiftApo.def)
 target_include_directories(VolumeLiftApo PRIVATE src)
@@ -26,6 +27,7 @@ target_link_libraries(VolumeLiftApo PRIVATE advapi32 ole32)
 add_executable(VolumeLift WIN32
     src/app/main.cpp
     src/app/Installer.cpp
+    src/app/VolumeLift.rc
     src/app/VolumeLift.manifest)
 target_include_directories(VolumeLift PRIVATE src)
 target_link_libraries(VolumeLift PRIVATE comctl32 shell32 ole32 advapi32 user32 gdi32)
