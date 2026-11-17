@@ -67,10 +67,12 @@ LSTATUS WriteValue(HKEY key, const wchar_t* name, const RegValue& value) {
     return RegSetValueExW(key, name, 0, value.type, value.data.data(), static_cast<DWORD>(value.data.size()));
 }
 
+// For REG_MULTI_SZ, `text` already holds each item followed by its own null;
+// one more null terminates the list.
 RegValue StringValue(const std::wstring& text, DWORD type = REG_SZ) {
     RegValue value;
     value.type = type;
-    const size_t chars = text.size() + (type == REG_MULTI_SZ ? 2 : 1);
+    const size_t chars = text.size() + 1;
     value.data.resize(chars * sizeof(wchar_t));
     memcpy(value.data.data(), text.c_str(), text.size() * sizeof(wchar_t));
     return value;
@@ -336,26 +338,21 @@ std::vector<Endpoint> ActiveRenderEndpoints(Log& log) {
     return endpoints;
 }
 
-bool ControlAudioService(bool start, Log& log) {
-    SC_HANDLE manager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
-    if (!manager) {
-        log.Error(L"Open service manager", GetLastError());
-        return false;
-    }
-    SC_HANDLE service = OpenServiceW(manager, L"Audiosrv", SERVICE_START | SERVICE_STOP | SERVICE_QUERY_STATUS);
+// Starts or stops one service and waits (up to 20 s) for it to get there.
+bool ControlService(SC_HANDLE manager, const std::wstring& name, bool start, Log& log) {
+    SC_HANDLE service = OpenServiceW(manager, name.c_str(), SERVICE_START | SERVICE_STOP | SERVICE_QUERY_STATUS);
     if (!service) {
-        log.Error(L"Open Windows Audio service", GetLastError());
-        CloseServiceHandle(manager);
+        log.Error(L"Open service " + name, GetLastError());
         return false;
     }
     SERVICE_STATUS status{};
-    bool requested = start ? StartServiceW(service, 0, nullptr) != FALSE
-                           : ControlService(service, SERVICE_CONTROL_STOP, &status) != FALSE;
+    const bool requested = start ? StartServiceW(service, 0, nullptr) != FALSE
+                                 : ::ControlService(service, SERVICE_CONTROL_STOP, &status) != FALSE;
     const DWORD error = requested ? ERROR_SUCCESS : GetLastError();
     const DWORD wanted = start ? SERVICE_RUNNING : SERVICE_STOPPED;
-    bool ok = requested || error == ERROR_SERVICE_ALREADY_RUNNING || error == ERROR_SERVICE_NOT_ACTIVE;
+    const bool ok = requested || error == ERROR_SERVICE_ALREADY_RUNNING || error == ERROR_SERVICE_NOT_ACTIVE;
     if (!ok) {
-        log.Error(start ? L"Start Windows Audio" : L"Stop Windows Audio", error);
+        log.Error((start ? L"Start " : L"Stop ") + name, error);
     }
     for (int i = 0; ok && i < 100; ++i) {
         if (QueryServiceStatus(service, &status) && status.dwCurrentState == wanted) {
@@ -364,6 +361,48 @@ bool ControlAudioService(bool start, Log& log) {
         Sleep(200);
     }
     CloseServiceHandle(service);
+    return ok;
+}
+
+// Services that depend on Windows Audio and were running when it was stopped.
+std::vector<std::wstring> g_stoppedDependents;
+
+bool ControlAudioService(bool start, Log& log) {
+    SC_HANDLE manager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
+    if (!manager) {
+        log.Error(L"Open service manager", GetLastError());
+        return false;
+    }
+    bool ok = true;
+    if (start) {
+        ok = ControlService(manager, L"Audiosrv", true, log);
+        // Dependents were recorded in stop order; start them in reverse.
+        for (auto it = g_stoppedDependents.rbegin(); it != g_stoppedDependents.rend(); ++it) {
+            ControlService(manager, *it, true, log);
+        }
+        g_stoppedDependents.clear();
+    } else {
+        SC_HANDLE audio = OpenServiceW(manager, L"Audiosrv", SERVICE_ENUMERATE_DEPENDENTS);
+        DWORD bytes = 0, count = 0;
+        if (audio && !EnumDependentServicesW(audio, SERVICE_ACTIVE, nullptr, 0, &bytes, &count) &&
+            GetLastError() == ERROR_MORE_DATA) {
+            std::vector<BYTE> buffer(bytes);
+            auto* dependents = reinterpret_cast<ENUM_SERVICE_STATUSW*>(buffer.data());
+            if (EnumDependentServicesW(audio, SERVICE_ACTIVE, dependents, bytes, &bytes, &count)) {
+                // Returned in reverse start order, which is the order to stop them.
+                for (DWORD i = 0; i < count; ++i) {
+                    if (ControlService(manager, dependents[i].lpServiceName, false, log)) {
+                        g_stoppedDependents.emplace_back(dependents[i].lpServiceName);
+                        log.Line(std::wstring(L"Stopped dependent service ") + dependents[i].lpServiceName);
+                    }
+                }
+            }
+        }
+        if (audio) {
+            CloseServiceHandle(audio);
+        }
+        ok = ControlService(manager, L"Audiosrv", false, log);
+    }
     CloseServiceHandle(manager);
     if (ok) {
         log.Line(start ? L"Windows Audio started" : L"Windows Audio stopped");
