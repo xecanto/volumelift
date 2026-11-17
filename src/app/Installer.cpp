@@ -545,10 +545,20 @@ InstallResult Install(const std::wstring& sourceDirectory) {
             log.Line(L"Skipped device " + endpoint.key);
             continue;
         }
-        WriteValue(key, kEndpointEffect, StringValue(kApoClsidString));
-        RegValue composite;
-        if (ReadValue(key, kCompositeEndpointEffect, composite)) {
-            WriteMultiString(key, kCompositeEndpointEffect, {kApoClsidString});
+        // Keep the device's own endpoint effects and run VolumeLift last, so the limiter sees the final signal.
+        std::vector<std::wstring> chain = ReadMultiString(key, kCompositeEndpointEffect);
+        RegValue legacy;
+        if (chain.empty() && ReadValue(key, kEndpointEffect, legacy) && legacy.type == REG_SZ) {
+            const std::wstring existing = reinterpret_cast<const wchar_t*>(legacy.data.data());
+            if (!existing.empty() && _wcsicmp(existing.c_str(), L"{00000000-0000-0000-0000-000000000000}") != 0) {
+                chain.push_back(existing);
+            }
+        }
+        std::erase_if(chain, [](const std::wstring& clsid) { return _wcsicmp(clsid.c_str(), kApoClsidString) == 0; });
+        chain.emplace_back(kApoClsidString);
+        WriteMultiString(key, kCompositeEndpointEffect, chain);
+        if (chain.size() == 1) {
+            WriteValue(key, kEndpointEffect, StringValue(kApoClsidString));
         }
         RegCloseKey(key);
 

@@ -286,7 +286,11 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
 
     case kTrayMessage:
         if (LOWORD(lParam) == WM_LBUTTONUP) {
-            IsWindowVisible(window) ? ShowWindow(window, SW_HIDE) : ShowWindowFromTray();
+            if (IsWindowVisible(window)) {
+                ShowWindow(window, SW_HIDE);
+            } else {
+                ShowWindowFromTray();
+            }
         } else if (LOWORD(lParam) == WM_RBUTTONUP) {
             ShowTrayMenu();
         }
