@@ -1,6 +1,5 @@
-// Lifecycle log for the APO, written to the audio engine's temp directory
-// (C:\Windows\ServiceProfiles\LocalService\AppData\Local\Temp\VolumeLiftApo.log).
-// Never call from APOProcess: it does file I/O.
+// Lifecycle log for the APO, written to %ProgramData%\VolumeLift\apo.log.
+// Never call from APOProcess or DllMain: it does file I/O.
 #pragma once
 
 namespace vl {

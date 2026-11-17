@@ -1,6 +1,7 @@
 // COM server entry points for the VolumeLift APO DLL.
 #include "apo/VolumeLiftApo.h"
 
+#include "apo/ApoLog.h"
 #include "common/Config.h"
 
 #include <new>
@@ -41,6 +42,9 @@ public:
         }
         const HRESULT hr = apo->QueryInterface(riid, object);
         apo->Release();
+        wchar_t iid[64] = {};
+        StringFromGUID2(riid, iid, 64);
+        vl::ApoLog(L"CreateInstance %s -> 0x%08lX", iid, static_cast<unsigned long>(hr));
         return hr;
     }
 
@@ -85,6 +89,9 @@ STDAPI DllGetClassObject(REFCLSID clsid, REFIID riid, void** object) {
         return E_POINTER;
     }
     *object = nullptr;
+    wchar_t requested[64] = {};
+    StringFromGUID2(clsid, requested, 64);
+    vl::ApoLog(L"DllGetClassObject %s", requested);
     if (clsid != vl::kApoClsid) {
         return CLASS_E_CLASSNOTAVAILABLE;
     }

@@ -21,8 +21,8 @@ jobs:
       - name: Build
         run: cmake --build build --config Release
 
-      - name: Test DSP
-        run: ctest --test-dir build -C Release --output-on-failure
+      - name: Test DSP and APO
+        run: ctest --test-dir build -C Release --output-on-failure -V
 
       - name: Package
         shell: pwsh

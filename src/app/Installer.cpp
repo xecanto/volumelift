@@ -461,6 +461,40 @@ void CreateSettingsKey(Log& log) {
     }
 }
 
+// Lets the audio engine (LocalService) write its diagnostic log next to install.log.
+void PrepareLogFolder(Log& log) {
+    wchar_t dir[MAX_PATH];
+    if (!ExpandEnvironmentStringsW(L"%ProgramData%\\VolumeLift", dir, MAX_PATH)) {
+        return;
+    }
+    CreateDirectoryW(dir, nullptr);
+    PACL oldDacl = nullptr;
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    DWORD status = GetNamedSecurityInfoW(dir, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, nullptr, nullptr, &oldDacl,
+                                         nullptr, &descriptor);
+    if (status == ERROR_SUCCESS) {
+        auto localService = WellKnownSid(WinLocalServiceSid);
+        EXPLICIT_ACCESSW entry{};
+        entry.grfAccessPermissions = FILE_GENERIC_READ | FILE_GENERIC_WRITE;
+        entry.grfAccessMode = GRANT_ACCESS;
+        entry.grfInheritance = SUB_CONTAINERS_AND_OBJECTS_INHERIT;
+        entry.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+        entry.Trustee.TrusteeType = TRUSTEE_IS_USER;
+        entry.Trustee.ptstrName = reinterpret_cast<LPWSTR>(localService.data());
+        PACL newDacl = nullptr;
+        status = SetEntriesInAclW(1, &entry, oldDacl, &newDacl);
+        if (status == ERROR_SUCCESS) {
+            status = SetNamedSecurityInfoW(dir, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, nullptr, nullptr, newDacl,
+                                           nullptr);
+            LocalFree(newDacl);
+        }
+        LocalFree(descriptor);
+    }
+    if (status != ERROR_SUCCESS) {
+        log.Error(L"Grant the audio engine access to the log folder", status);
+    }
+}
+
 void WriteLogFile(const std::wstring& text) {
     wchar_t* programData = nullptr;
     if (FAILED(SHGetKnownFolderPath(FOLDERID_ProgramData, 0, nullptr, &programData))) {
@@ -556,6 +590,7 @@ InstallResult Install(const std::wstring& sourceDirectory) {
         log.Line(L"Registered APO " + std::wstring(kApoClsidString));
     }
     CreateSettingsKey(log);
+    PrepareLogFolder(log);
 
     // Unsigned third-party APOs need the audio engine's protected mode off.
     BackUpKey(kAudioPolicyKey, std::wstring(kBackupKey) + L"\\AudioPolicy", {kDisableProtectedAudioDG});

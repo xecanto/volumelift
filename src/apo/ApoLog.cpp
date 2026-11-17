@@ -30,12 +30,11 @@ void ApoLog(const wchar_t* format, ...) {
     char utf8[1400];
     const int bytes = WideCharToMultiByte(CP_UTF8, 0, line, length, utf8, sizeof(utf8), nullptr, nullptr);
 
+    // The installer grants the audio engine's account write access to this folder.
     wchar_t path[MAX_PATH];
-    const DWORD dirLength = GetTempPathW(MAX_PATH, path);
-    if (dirLength == 0 || dirLength > MAX_PATH - 20) {
+    if (!ExpandEnvironmentStringsW(L"%ProgramData%\\VolumeLift\\apo.log", path, MAX_PATH)) {
         return;
     }
-    wcscat_s(path, L"VolumeLiftApo.log");
 
     std::lock_guard<std::mutex> lock(g_logMutex);
     HANDLE file = CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
